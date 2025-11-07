@@ -37,9 +37,9 @@ except Exception as e:
 # Helper signals object to safely update UI from worker threads
 # ------------------------------
 class Signals(QObject):
-    update_progress = Signal(str, float, int, int, str)  
-    update_status = Signal(str, str)  
-    finished_video = Signal(str, bool, str)  
+    update_progress = Signal(str, float, int, int, str)
+    update_status = Signal(str, str)
+    finished_video = Signal(str, bool, str)
 
 signals = Signals()
 
@@ -111,10 +111,11 @@ class VideoWidget(QWidget):
             except:
                 p = 0
             self.progress.setValue(p)
-        self.status_label.setText(status_text)
+        # status_text should always be a string
+        self.status_label.setText(status_text or "")
 
     def set_status_text(self, text):
-        self.status_label.setText(text)
+        self.status_label.setText(text or "")
 
 # ------------------------------
 # Worker that downloads a single video using yt_dlp
@@ -135,22 +136,34 @@ class DownloadWorker(threading.Thread):
             if status == 'downloading':
                 downloaded = d.get('downloaded_bytes') or 0
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or -1
-                percent = d.get('_percent_str')
+
+                # percent may be in different keys or None
                 percent_float = None
                 try:
-                    if 'percent' in d:
+                    if 'percent' in d and d['percent'] is not None:
                         percent_float = float(d['percent'])
-                    elif percent:
-                        percent_float = float(percent.strip().strip('%'))
-                except:
+                    else:
+                        percent_str = d.get('_percent_str')
+                        if percent_str:
+                            percent_float = float(percent_str.strip().strip('%'))
+                except Exception:
                     percent_float = None
+
+                # ensure we never format None
+                p_display = percent_float if percent_float is not None else 0.0
+
                 speed = d.get('speed') or 0
-                status_text = f"Downloading {percent_float:.1f}% • {self._fmt_bytes(downloaded)} / "
-                status_text += f"{self._fmt_bytes(total) if total!=-1 else '?'} • {self._fmt_bytes(speed)}/s"
-                signals.update_progress.emit(self.video_id, percent_float or 0.0, downloaded, total if total else -1, status_text)
+                # build status text safely
+                status_text = f"Downloading {p_display:.1f}% • {self._fmt_bytes(downloaded)} / "
+                status_text += f"{self._fmt_bytes(total) if total != -1 else '?'} • {self._fmt_bytes(speed)}/s"
+
+                # emit a numeric percent (float) guaranteed not None
+                signals.update_progress.emit(self.video_id, float(p_display), downloaded, total if total else -1, status_text)
+
             elif status == 'finished':
                 signals.update_progress.emit(self.video_id, 100.0, d.get('downloaded_bytes') or 0, d.get('total_bytes') or -1, "Processing/merging")
             elif status == 'error':
+                # pass a safe message
                 signals.update_status.emit(self.video_id, "Error")
 
         ydl_opts = self.opts.copy()
@@ -169,6 +182,7 @@ class DownloadWorker(threading.Thread):
                 ydl.download([url])
             signals.finished_video.emit(self.video_id, True, "Done")
         except Exception as e:
+            # always convert exception to string so UI can display it safely
             signals.finished_video.emit(self.video_id, False, str(e))
 
     def _fmt_bytes(self, b):
@@ -411,7 +425,8 @@ class MainWindow(QWidget):
                 widget.progress.setValue(100)
             else:
                 widget.set_status_text("Failed")
-        self.status_console.append(f"[{video_id}] {'OK' if success else 'FAILED'} — {message}")
+        # ensure message is string
+        self.status_console.append(f"[{video_id}] {'OK' if success else 'FAILED'} — {str(message)}")
 
     def _quality_to_format(self, q):
         if q == "best":
